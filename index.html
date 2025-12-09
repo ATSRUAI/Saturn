@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Kepler Saturn: Hand Tracking Particle System</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            cursor: none; /* Hide cursor for immersion */
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            color: rgba(255, 255, 255, 0.8);
+            pointer-events: none;
+        }
+
+        h1 {
+            font-weight: 200;
+            font-size: 24px;
+            margin: 0 0 10px 0;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            text-shadow: 0 0 10px rgba(255,255,255,0.3);
+        }
+
+        .status-panel {
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(4px);
+            padding: 15px;
+            border-left: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 0 10px 10px 0;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            font-size: 14px;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #ff3333;
+            margin-right: 10px;
+            box-shadow: 0 0 5px #ff3333;
+            transition: all 0.3s ease;
+        }
+
+        .dot.active {
+            background-color: #33ff33;
+            box-shadow: 0 0 10px #33ff33, 0 0 20px #33ff33;
+        }
+
+        .data-row {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+
+        p.instruction {
+            font-size: 12px;
+            opacity: 0.7;
+            max-width: 300px;
+            line-height: 1.6;
+            margin-top: 10px;
+            color: #ddd;
+        }
+
+        .key-point {
+            color: #ffcc00;
+        }
+
+        /* Video element (hidden) */
+        #input-video {
+            display: none;
+        }
+
+        /* Fullscreen Button */
+        #fs-btn {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            z-index: 20;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 12px 24px;
+            cursor: pointer;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 2px;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(5px);
+            pointer-events: auto;
+            border-radius: 20px;
+        }
+
+        #fs-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.6);
+            transform: scale(1.05);
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 14px;
+            letter-spacing: 4px;
+            z-index: 100;
+            transition: opacity 0.5s;
+            text-align: center;
+        }
+        
+        #loading span {
+            display: block;
+            font-size: 10px;
+            margin-top: 10px;
+            opacity: 0.5;
+        }
+    </style>
+
+    <!-- Import Three.js and Addons -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading">
+        SYSTEM INITIALIZING...
+        <span>Allow Camera Access for Interaction</span>
+    </div>
+
+    <div id="ui-layer">
+        <h1>KEPLER SATURN</h1>
+        <div class="status-panel">
+            <div class="status-indicator">
+                <div class="dot" id="cam-status"></div>
+                <span id="status-text">SEARCHING SIGNAL...</span>
+            </div>
+            <div class="data-row">Z-DIST: <span id="debug-z">000</span></div>
+            <div class="data-row">ROT-X: <span id="debug-rx">0.0</span></div>
+            <div class="data-row">ROT-Y: <span id="debug-ry">0.0</span></div>
+            
+            <p class="instruction">
+                1. <span class="key-point">张开手掌</span>：靠近 & 混沌<br>
+                2. <span class="key-point">捏合手掌</span>：远离 & 秩序<br>
+                3. <span class="key-point">移动手掌</span>：全向旋转土星
+            </p>
+        </div>
+    </div>
+
+    <button id="fs-btn">ENTER IMMERSION</button>
+
+    <div id="canvas-container"></div>
+    <video id="input-video"></video>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- Configuration ---
+        const CONFIG = {
+            particleCount: 85000, 
+            saturnRadius: 15,
+            ringInner: 28,
+            ringOuter: 70,
+            minDist: 15,  
+            maxDist: 140, 
+            camLerp: 0.05,
+            rotLerp: 0.08, // 旋转惯性，越小越有重量感
+            chaosThreshold: 35, 
+        };
+
+        // --- State ---
+        let state = {
+            targetZ: CONFIG.maxDist,
+            currentZ: CONFIG.maxDist,
+            
+            // Rotation Control
+            targetRotX: 0.3, // Initial tilt
+            targetRotY: 0,
+            currentRotX: 0.3,
+            currentRotY: 0,
+            
+            handDetected: false,
+            chaosLevel: 0.0, 
+            brightness: 0.0
+        };
+
+        // --- Three.js Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.002); // Slightly lighter fog for depth
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, CONFIG.maxDist);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); 
+        renderer.toneMapping = THREE.ReinhardToneMapping;
+        container.appendChild(renderer.domElement);
+
+        // --- Post Processing ---
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = 0;
+        bloomPass.strength = 1.0; 
+        bloomPass.radius = 0.8;
+
+        const composer = new EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // --- Texture Generation ---
+        function getTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            
+            // Soft glow particle
+            const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            grad.addColorStop(0, 'rgba(255,255,255,1)');
+            grad.addColorStop(0.15, 'rgba(255,220,180,0.8)'); // Warm center
+            grad.addColorStop(0.4, 'rgba(60,60,60,0.3)');
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // --- Particle System ---
+        const particleGeometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(CONFIG.particleCount * 3);
+        const colors = new Float32Array(CONFIG.particleCount * 3);
+        const sizes = new Float32Array(CONFIG.particleCount);
+        const physicsData = []; 
+
+        const colorCore = new THREE.Color(0xff9933); 
+        const colorRingInner = new THREE.Color(0xffeebb); 
+        const colorRingOuter = new THREE.Color(0x665577); 
+
+        for (let i = 0; i < CONFIG.particleCount; i++) {
+            let x, y, z, r, angle, speed, baseColor;
+            
+            // 25% Core, 75% Rings
+            if (i < CONFIG.particleCount * 0.25) {
+                // Core
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                const radius = Math.pow(Math.random(), 1/3) * CONFIG.saturnRadius; 
+                
+                x = radius * Math.sin(phi) * Math.cos(theta);
+                y = radius * Math.sin(phi) * Math.sin(theta);
+                z = radius * Math.cos(phi);
+                
+                r = Math.sqrt(x*x + z*z); 
+                angle = Math.atan2(z, x);
+                speed = 0.2; 
+                baseColor = colorCore;
+            } else {
+                // Rings
+                r = CONFIG.ringInner + Math.pow(Math.random(), 1.5) * (CONFIG.ringOuter - CONFIG.ringInner);
+                angle = Math.random() * Math.PI * 2;
+                
+                // Ring thickness variation
+                const thickness = (r - CONFIG.ringInner) * 0.05;
+                y = (Math.random() - 0.5) * thickness; 
+                
+                x = Math.cos(angle) * r;
+                z = Math.sin(angle) * r;
+                
+                speed = 45 / Math.sqrt(r); // Kepler Speed
+                
+                const t = (r - CONFIG.ringInner) / (CONFIG.ringOuter - CONFIG.ringInner);
+                baseColor = new THREE.Color().lerpColors(colorRingInner, colorRingOuter, t);
+                
+                // Cassini Division
+                if (r > 42 && r < 45) {
+                    baseColor.multiplyScalar(0.05);
+                }
+            }
+
+            positions[i * 3] = x;
+            positions[i * 3 + 1] = y;
+            positions[i * 3 + 2] = z;
+
+            colors[i * 3] = baseColor.r;
+            colors[i * 3 + 1] = baseColor.g;
+            colors[i * 3 + 2] = baseColor.b;
+
+            sizes[i] = Math.random();
+
+            physicsData.push({
+                r: r,
+                angle: angle,
+                speed: speed,
+                yBase: y,
+                isCore: i < CONFIG.particleCount * 0.25,
+                baseX: x, 
+                baseY: y,
+                baseZ: z,
+                originalColor: baseColor.clone(),
+                noiseOffset: Math.random() * 100
+            });
+        }
+
+        particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        particleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        particleGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                pointTexture: { value: getTexture() },
+                globalBrightness: { value: 1.0 },
+                zoomLevel: { value: 1.0 },
+                time: { value: 0.0 }
+            },
+            vertexShader: `
+                attribute float size;
+                attribute vec3 color;
+                varying vec3 vColor;
+                uniform float zoomLevel;
+                uniform float time;
+                
+                void main() {
+                    vColor = color;
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    
+                    // Dynamic sizing based on distance and zoom
+                    float distFactor = 250.0 / -mvPosition.z;
+                    float outputSize = size * distFactor * (0.6 + zoomLevel * 2.0);
+                    
+                    gl_PointSize = outputSize;
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D pointTexture;
+                uniform float globalBrightness;
+                varying vec3 vColor;
+                void main() {
+                    vec4 tex = texture2D(pointTexture, gl_PointCoord);
+                    // Boost color for bloom
+                    gl_FragColor = vec4(vColor * globalBrightness * 2.0, 1.0) * tex;
+                    if (gl_FragColor.a < 0.05) discard;
+                }
+            `,
+            blending: THREE.AdditiveBlending,
+            depthTest: false,
+            transparent: true
+        });
+
+        const particleSystem = new THREE.Points(particleGeometry, material);
+        // Container for rotation
+        const systemContainer = new THREE.Group();
+        systemContainer.add(particleSystem);
+        
+        // Initial Tilt
+        particleSystem.rotation.x = 0.3; 
+        particleSystem.rotation.z = 0.1;
+        
+        scene.add(systemContainer);
+
+
+        // --- Interaction Logic (MediaPipe) ---
+        const videoElement = document.getElementById('input-video');
+        const statusDot = document.getElementById('cam-status');
+        const statusText = document.getElementById('status-text');
+        const debugZ = document.getElementById('debug-z');
+        const debugRX = document.getElementById('debug-rx');
+        const debugRY = document.getElementById('debug-ry');
+
+        function onResults(results) {
+            document.getElementById('loading').style.opacity = 0;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                state.handDetected = true;
+                statusDot.classList.add('active');
+                statusText.innerText = "LINK ESTABLISHED";
+                statusDot.style.backgroundColor = "#33ff33";
+                statusDot.style.boxShadow = "0 0 15px #33ff33";
+
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // 1. Z-AXIS CONTROL (Pinch)
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const wrist = landmarks[0];
+                const middleMCP = landmarks[9];
+
+                const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                const palmSize = Math.hypot(wrist.x - middleMCP.x, wrist.y - middleMCP.y);
+                const ratio = pinchDist / (palmSize || 1); 
+
+                let normalizedOpenness = (ratio - 0.15) / 1.0; 
+                normalizedOpenness = Math.max(0, Math.min(1, normalizedOpenness));
+                
+                state.targetZ = CONFIG.maxDist - (normalizedOpenness * (CONFIG.maxDist - CONFIG.minDist));
+
+                // 2. ROTATION CONTROL (Palm Position)
+                // Middle Finger MCP (9) is a good stable center point
+                const handX = middleMCP.x; // 0 (left) to 1 (right)
+                const handY = middleMCP.y; // 0 (top) to 1 (bottom)
+
+                // Map [0,1] to Rotation Angles [-PI, PI]
+                // X position controls Y rotation (Yaw)
+                // Y position controls X rotation (Pitch)
+                
+                // Adjust sensitivity: Full screen width = 180 degrees rotation approx
+                state.targetRotY = (handX - 0.5) * Math.PI * 1.5; 
+                state.targetRotX = (handY - 0.5) * Math.PI * 1.0; 
+
+            } else {
+                state.handDetected = false;
+                statusDot.classList.remove('active');
+                statusDot.style.backgroundColor = "#ff3333";
+                statusDot.style.boxShadow = "none";
+                statusText.innerText = "NO SIGNAL / MOUSE MODE";
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        
+        cameraUtils.start().catch(e => {
+            console.error(e);
+            statusText.innerText = "CAM PERMISSION DENIED";
+        });
+
+        // Mouse Fallback
+        document.addEventListener('mousemove', (e) => {
+            if (!state.handDetected) {
+                // Z Control
+                const percentY = 1 - (e.clientY / window.innerHeight); 
+                state.targetZ = CONFIG.maxDist - (percentY * (CONFIG.maxDist - CONFIG.minDist));
+                
+                // Rotation Control (Mouse X controls Y rotation)
+                const percentX = (e.clientX / window.innerWidth) - 0.5;
+                state.targetRotY = percentX * Math.PI;
+                // Mouse Y (Top half vs Bottom half) adds to pitch
+                const percentYCent = (e.clientY / window.innerHeight) - 0.5;
+                state.targetRotX = percentYCent * Math.PI * 0.5;
+            }
+        });
+
+
+        // --- Animation Loop ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            material.uniforms.time.value = time;
+
+            // --- 1. Camera & Z Logic ---
+            state.currentZ += (state.targetZ - state.currentZ) * CONFIG.camLerp;
+            camera.position.z = state.currentZ;
+
+            // --- 2. Rotation Logic ---
+            if (!state.handDetected) {
+                // Auto rotate slowly if no hand
+                state.targetRotY += 0.0005; 
+            }
+            
+            // Lerp Rotation (Heavy Physics Feel)
+            state.currentRotX += (state.targetRotX - state.currentRotX) * CONFIG.rotLerp;
+            state.currentRotY += (state.targetRotY - state.currentRotY) * CONFIG.rotLerp;
+
+            systemContainer.rotation.x = state.currentRotX;
+            systemContainer.rotation.y = state.currentRotY;
+            
+            // UI Debug
+            debugZ.innerText = Math.round(state.currentZ);
+            debugRX.innerText = state.currentRotX.toFixed(2);
+            debugRY.innerText = state.currentRotY.toFixed(2);
+
+            // --- 3. Visuals & Chaos ---
+            const distRatio = (state.currentZ - CONFIG.minDist) / (CONFIG.maxDist - CONFIG.minDist);
+            const intensity = 1.0 - Math.max(0, Math.min(1, distRatio)); 
+
+            // Brightness (Inverse Square Law Simulation)
+            // Closer = Much Brighter
+            state.brightness = 0.8 + Math.pow(intensity, 2) * 4.0; 
+            bloomPass.strength = 0.8 + Math.pow(intensity, 3) * 3.5;
+            material.uniforms.globalBrightness.value = state.brightness;
+            material.uniforms.zoomLevel.value = intensity;
+
+            // Chaos Trigger
+            const isChaos = state.currentZ < CONFIG.chaosThreshold;
+            const chaosIntensity = isChaos ? (1.0 - (state.currentZ / CONFIG.chaosThreshold)) : 0;
+            
+            // --- 4. Particle Physics ---
+            const posAttr = particleGeometry.attributes.position;
+            const colAttr = particleGeometry.attributes.color;
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const data = physicsData[i];
+                
+                // Kepler Orbit
+                if (!data.isCore) {
+                    data.angle += (data.speed * delta * 0.1);
+                } else {
+                    data.angle += 0.2 * delta;
+                }
+
+                let ox, oy, oz;
+                
+                if (data.isCore) {
+                    ox = data.baseX;
+                    oy = data.baseY;
+                    oz = data.baseZ;
+                    // Rotate core locally to make it look alive
+                    const coreRot = time * 0.2;
+                    const tx = ox * Math.cos(coreRot) - oz * Math.sin(coreRot);
+                    const tz = ox * Math.sin(coreRot) + oz * Math.cos(coreRot);
+                    ox = tx; oz = tz;
+                } else {
+                    ox = Math.cos(data.angle) * data.r;
+                    oz = Math.sin(data.angle) * data.r;
+                    oy = data.yBase;
+                }
+
+                // Chaos Application
+                if (chaosIntensity > 0.01) {
+                    const noiseScale = 8.0 * chaosIntensity; 
+                    const tOffset = time * 8.0 + data.noiseOffset;
+                    
+                    // High frequency noise
+                    const jx = (Math.sin(tOffset)) * noiseScale;
+                    const jy = (Math.cos(tOffset * 0.9)) * noiseScale;
+                    const jz = (Math.sin(tOffset * 1.1)) * noiseScale;
+
+                    // Explosion push
+                    const explodeFactor = 1.0 + Math.pow(chaosIntensity, 2) * 1.5;
+
+                    posAttr.setXYZ(i, 
+                        ox * explodeFactor + jx, 
+                        oy * explodeFactor + jy, 
+                        oz * explodeFactor + jz
+                    );
+                    
+                    // Flash White
+                    if (Math.random() < 0.15 * chaosIntensity) {
+                         colAttr.setXYZ(i, 2.0, 2.0, 2.5); // Super bright white/blue
+                    } else {
+                        colAttr.setXYZ(i, data.originalColor.r, data.originalColor.g, data.originalColor.b);
+                    }
+
+                } else {
+                    // Orderly
+                    posAttr.setXYZ(i, ox, oy, oz);
+                    
+                    // Restore color slowly
+                    const currR = colAttr.getX(i);
+                    if (currR > data.originalColor.r + 0.1) {
+                        colAttr.setX(i, currR * 0.9 + data.originalColor.r * 0.1);
+                        colAttr.setY(i, currR * 0.9 + data.originalColor.g * 0.1);
+                        colAttr.setZ(i, currR * 0.9 + data.originalColor.b * 0.1);
+                    }
+                }
+            }
+
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+
+            composer.render();
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        document.getElementById('fs-btn').addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                }
+            }
+        });
+
+    </script>
+</body>
+</html>
